@@ -1,6 +1,7 @@
 from mel2wav.dataset import AudioDataset
 from mel2wav.modules import Generator, Discriminator, Audio2Mel
-from mel2wav.utils import save_sample
+from mel2wav.utils import save_sample, load_config, count_parameters
+from mel2wav.audio import AudioProcessor
 
 import torch
 import torch.nn.functional as F
@@ -18,6 +19,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--save_path", required=True)
     parser.add_argument("--load_path", default=None)
+    parser.add_argument("--config", default=None)
 
     parser.add_argument("--n_mel_channels", type=int, default=80)
     parser.add_argument("--ngf", type=int, default=32)
@@ -45,6 +47,10 @@ def parse_args():
 def main():
     args = parse_args()
 
+    # load audio processor
+    ap_config = load_config(args.config)
+    ap = AudioProcessor(**ap_config)
+
     root = Path(args.save_path)
     load_root = Path(args.load_path) if args.load_path else None
     root.mkdir(parents=True, exist_ok=True)
@@ -63,10 +69,13 @@ def main():
     netD = Discriminator(
         args.num_D, args.ndf, args.n_layers_D, args.downsamp_factor
     ).cuda()
-    fft = Audio2Mel(n_mel_channels=args.n_mel_channels).cuda()
+    # fft = Audio2Mel(n_mel_channels=args.n_mel_channels).cuda()
 
     print(netG)
     print(netD)
+
+    print(f"netG has {count_parameters(netG)} parameters.")
+    print(f"netD has {count_parameters(netD)} parameters.")
 
     #####################
     # Create optimizers #
@@ -83,13 +92,12 @@ def main():
     #######################
     # Create data loaders #
     #######################
-    train_set = AudioDataset(
-        Path(args.data_path) / "train_files.txt", args.seq_len, sampling_rate=22050
+    train_set = AudioDataset(ap,
+        Path(args.data_path) / "train_files.txt", args.seq_len
     )
-    test_set = AudioDataset(
+    test_set = AudioDataset(ap,
         Path(args.data_path) / "test_files.txt",
-        22050 * 4,
-        sampling_rate=22050,
+        ap.sample_rate * 4,
         augment=False,
     )
 
@@ -101,16 +109,16 @@ def main():
     ##########################
     test_voc = []
     test_audio = []
-    for i, x_t in enumerate(test_loader):
+    for i, x_t, m_t in enumerate(test_loader):
         x_t = x_t.cuda()
-        s_t = fft(x_t).detach()
+        m_t = m_t.cuda()
 
         test_voc.append(s_t.cuda())
         test_audio.append(x_t)
 
         audio = x_t.squeeze().cpu()
-        save_sample(root / ("original_%d.wav" % i), 22050, audio)
-        writer.add_audio("original/sample_%d.wav" % i, audio, 0, sample_rate=22050)
+        save_sample(root / ("original_%d.wav" % i), ap.sample_rate, audio)
+        writer.add_audio("original/sample_%d.wav" % i, audio, 0, sample_rate=ap.sample_rate)
 
         if i == args.n_test_samples - 1:
             break
@@ -188,12 +196,12 @@ def main():
                     for i, (voc, _) in enumerate(zip(test_voc, test_audio)):
                         pred_audio = netG(voc)
                         pred_audio = pred_audio.squeeze().cpu()
-                        save_sample(root / ("generated_%d.wav" % i), 22050, pred_audio)
+                        save_sample(root / ("generated_%d.wav" % i), ap.sample_rate, pred_audio)
                         writer.add_audio(
                             "generated/sample_%d.wav" % i,
                             pred_audio,
                             epoch,
-                            sample_rate=22050,
+                            sample_rate=ap.sample_rate,
                         )
 
                 torch.save(netG.state_dict(), root / "netG.pt")

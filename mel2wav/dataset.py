@@ -27,8 +27,9 @@ class AudioDataset(torch.utils.data.Dataset):
     spectrogram, audio pair.
     """
 
-    def __init__(self, training_files, segment_length, sampling_rate, augment=True):
-        self.sampling_rate = sampling_rate
+    def __init__(self, ap, training_files, segment_length, augment=False):
+        self.ap = ap
+        self.sampling_rate = ap.sample_rate
         self.segment_length = segment_length
         self.audio_files = files_to_list(training_files)
         self.audio_files = [Path(training_files).parent / x for x in self.audio_files]
@@ -39,7 +40,7 @@ class AudioDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         # Read audio
         filename = self.audio_files[index]
-        audio, sampling_rate = self.load_wav_to_torch(filename)
+        audio = self.load_wav_to_torch(filename)
         # Take segment
         if audio.size(0) >= self.segment_length:
             max_audio_start = audio.size(0) - self.segment_length
@@ -50,8 +51,8 @@ class AudioDataset(torch.utils.data.Dataset):
                 audio, (0, self.segment_length - audio.size(0)), "constant"
             ).data
 
-        # audio = audio / 32768.0
-        return audio.unsqueeze(0)
+        mel = self.ap.melspectrogram(audio)
+        return audio.unsqueeze(0), mel.unsqueeze(0)
 
     def __len__(self):
         return len(self.audio_files)
@@ -60,11 +61,12 @@ class AudioDataset(torch.utils.data.Dataset):
         """
         Loads wavdata into torch array
         """
-        data, sampling_rate = load(full_path, sr=self.sampling_rate)
-        data = 0.95 * normalize(data)
+        data = self.ap.load_wav(full_path)
+        # norm inf 
+        # data = 0.95 * normalize(data)
 
         if self.augment:
             amplitude = np.random.uniform(low=0.3, high=1.0)
             data = data * amplitude
 
-        return torch.from_numpy(data).float(), sampling_rate
+        return torch.from_numpy(data).float()
