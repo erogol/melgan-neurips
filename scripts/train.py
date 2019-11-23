@@ -1,4 +1,5 @@
-from mel2wav.dataset import AudioDataset
+# from mel2wav.dataset import AudioDataset
+from mel2wav.dataset_tts import MyDataset
 from mel2wav.modules import Generator, Discriminator, Audio2Mel
 from mel2wav.utils import save_sample, load_config, count_parameters
 from mel2wav.audio import AudioProcessor
@@ -8,6 +9,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
+import os
 import yaml
 import numpy as np
 import time
@@ -34,7 +36,7 @@ def parse_args():
 
     parser.add_argument("--data_path", default=None, type=Path)
     parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--seq_len", type=int, default=8192)
+    parser.add_argument("--seq_len", type=int, default=30)
 
     parser.add_argument("--epochs", type=int, default=3000)
     parser.add_argument("--log_interval", type=int, default=100)
@@ -92,28 +94,25 @@ def main():
     #######################
     # Create data loaders #
     #######################
-    train_set = AudioDataset(ap,
-        Path(args.data_path) / "train_files.txt", args.seq_len
-    )
-    test_set = AudioDataset(ap,
-        Path(args.data_path) / "test_files.txt",
-        ap.sample_rate * 4,
-        augment=False,
-    )
+    with open(os.path.join(args.data_path, "metadata.txt")) as f:
+        metadata = [line.strip().split("|") for line in f.readlines()]
+    train_set = MyDataset(metadata[:-10], args.seq_len, ap, eval=False)
+    test_set = MyDataset(metadata[-10:], args.seq_len, ap, eval=True)
 
-    train_loader = DataLoader(train_set, batch_size=args.batch_size, num_workers=4)
-    test_loader = DataLoader(test_set, batch_size=1)
+    train_loader = DataLoader(train_set, collate_fn=train_set.collate, batch_size=args.batch_size, num_workers=4)
+    test_loader = DataLoader(test_set, collate_fn=test_set.collate, batch_size=1)
 
     ##########################
     # Dumping original audio #
     ##########################
     test_voc = []
     test_audio = []
-    for i, x_t, m_t in enumerate(test_loader):
+    for i, data in enumerate(test_loader):
+        x_t, s_t = data
         x_t = x_t.cuda()
-        m_t = m_t.cuda()
+        s_t = s_t.cuda()
 
-        test_voc.append(s_t.cuda())
+        test_voc.append(s_t)
         test_audio.append(x_t)
 
         audio = x_t.squeeze().cpu()
@@ -132,13 +131,14 @@ def main():
     best_mel_reconst = 1000000
     steps = 0
     for epoch in range(1, args.epochs + 1):
-        for iterno, x_t in enumerate(train_loader):
+        for iterno, data in enumerate(train_loader):
+            x_t, s_t = data
             x_t = x_t.cuda()
-            s_t = fft(x_t).detach()
+            s_t = s_t.cuda()
             x_pred_t = netG(s_t.cuda())
 
             with torch.no_grad():
-                s_pred_t = fft(x_pred_t.detach())
+                s_pred_t = torch.from_numpy(ap.melspectrogram(x_pred_t.detach().cpu()))
                 s_error = F.l1_loss(s_t, s_pred_t).item()
 
             #######################
